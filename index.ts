@@ -26,7 +26,7 @@ function jsonResponse(data: any, status = 200) {
 
 const server = Bun.serve({
     port: process.env.PORT ?? 3000,
-    async fetch(req: Request) {
+    async fetch(req: Request): Promise<Response> {
         const { pathname } = new URL(req.url);
 
         // CORS headers
@@ -42,29 +42,312 @@ const server = Bun.serve({
         }
 
         try {
-            // Root endpoint - API documentation
+            // Root endpoint - Interactive web UI
             if (pathname === '/' && req.method === 'GET') {
-                return jsonResponse({
-                    name: 'API_RALF',
-                    version: '1.0.0',
-                    description: 'API de chat unificada con balanceo de carga entre múltiples proveedores de IA',
-                    endpoints: {
-                        '/': 'Esta documentación',
-                        '/health': 'Estado del servidor',
-                        '/services': 'Lista de servicios disponibles',
-                        '/chat': 'Endpoint principal para chat (POST)',
-                    },
-                    providers: services.map(s => s.name),
-                    usage: {
-                        method: 'POST',
-                        endpoint: '/chat',
-                        body: {
-                            messages: [
-                                { role: 'user', content: 'Tu mensaje aquí' }
-                            ]
-                        }
-                    },
-                    repository: 'https://github.com/tu-usuario/API_RALF',
+                const html = `<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API_RALF - Multi-AI Chat API</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 40px;
+        }
+        .header h1 {
+            font-size: 3em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        .header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+        .cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .card {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        .card h2 {
+            color: #667eea;
+            margin-bottom: 15px;
+            font-size: 1.5em;
+        }
+        .endpoint {
+            background: #f7f7f7;
+            padding: 12px;
+            border-radius: 8px;
+            margin: 10px 0;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+        }
+        .method {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-weight: bold;
+            margin-right: 8px;
+            font-size: 0.8em;
+        }
+        .get { background: #61affe; color: white; }
+        .post { background: #49cc90; color: white; }
+        .service-badge {
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 5px 12px;
+            border-radius: 20px;
+            margin: 5px;
+            font-size: 0.9em;
+        }
+        .chat-container {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        .chat-messages {
+            height: 400px;
+            overflow-y: auto;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 15px;
+            background: #fafafa;
+        }
+        .message {
+            margin-bottom: 15px;
+            padding: 12px;
+            border-radius: 8px;
+            max-width: 80%;
+        }
+        .user-message {
+            background: #667eea;
+            color: white;
+            margin-left: auto;
+        }
+        .ai-message {
+            background: #e0e0e0;
+            color: #333;
+        }
+        .input-group {
+            display: flex;
+            gap: 10px;
+        }
+        input {
+            flex: 1;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 1em;
+        }
+        button {
+            padding: 12px 30px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1em;
+            font-weight: bold;
+            transition: transform 0.2s;
+        }
+        button:hover {
+            transform: translateY(-2px);
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .status {
+            text-align: center;
+            padding: 10px;
+            border-radius: 8px;
+            margin-top: 10px;
+            font-size: 0.9em;
+        }
+        .status.loading {
+            background: #fff3cd;
+            color: #856404;
+        }
+        .code-block {
+            background: #282c34;
+            color: #abb2bf;
+            padding: 15px;
+            border-radius: 8px;
+            overflow-x: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85em;
+            margin: 10px 0;
+        }
+        .footer {
+            text-align: center;
+            color: white;
+            margin-top: 40px;
+            opacity: 0.8;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 API_RALF</h1>
+            <p>API de Chat Unificada con Balanceo de Carga Multi-IA</p>
+        </div>
+
+        <div class="cards">
+            <div class="card">
+                <h2>📊 Servicios Activos</h2>
+                <p>Balanceo automático entre:</p>
+                ${services.map(s => `<span class="service-badge">${s.name}</span>`).join('')}
+                <p style="margin-top: 15px; font-size: 0.9em; color: #666;">
+                    El sistema distribuye las peticiones usando round-robin
+                </p>
+            </div>
+
+            <div class="card">
+                <h2>🚀 Endpoints</h2>
+                <div class="endpoint">
+                    <span class="method get">GET</span>
+                    <span>/health</span>
+                </div>
+                <div class="endpoint">
+                    <span class="method get">GET</span>
+                    <span>/services</span>
+                </div>
+                <div class="endpoint">
+                    <span class="method post">POST</span>
+                    <span>/chat</span>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>📝 Ejemplo de Uso</h2>
+                <div class="code-block">curl -X POST ${server.url}chat \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "messages": [
+      {
+        "role": "user",
+        "content": "Hola!"
+      }
+    ]
+  }'</div>
+            </div>
+        </div>
+
+        <div class="chat-container">
+            <h2 style="color: #667eea; margin-bottom: 20px;">💬 Prueba la API en Vivo</h2>
+            <div class="chat-messages" id="messages"></div>
+            <div class="input-group">
+                <input 
+                    type="text" 
+                    id="messageInput" 
+                    placeholder="Escribe tu mensaje aquí..."
+                    onkeypress="if(event.key === 'Enter') sendMessage()"
+                />
+                <button onclick="sendMessage()" id="sendBtn">Enviar</button>
+            </div>
+            <div id="status"></div>
+        </div>
+
+        <div class="footer">
+            <p>Desarrollado con ❤️ usando Bun • En producción con Coolify</p>
+        </div>
+    </div>
+
+    <script>
+        const messagesDiv = document.getElementById('messages');
+        const input = document.getElementById('messageInput');
+        const sendBtn = document.getElementById('sendBtn');
+        const statusDiv = document.getElementById('status');
+
+        function addMessage(content, isUser) {
+            const div = document.createElement('div');
+            div.className = 'message ' + (isUser ? 'user-message' : 'ai-message');
+            div.textContent = content;
+            messagesDiv.appendChild(div);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        async function sendMessage() {
+            const message = input.value.trim();
+            if (!message) return;
+
+            addMessage(message, true);
+            input.value = '';
+            sendBtn.disabled = true;
+            statusDiv.className = 'status loading';
+            statusDiv.textContent = '🤖 Procesando...';
+
+            try {
+                const response = await fetch('/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        messages: [{ role: 'user', content: message }]
+                    })
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.message || 'Error en la API');
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let aiResponse = '';
+                const aiDiv = document.createElement('div');
+                aiDiv.className = 'message ai-message';
+                messagesDiv.appendChild(aiDiv);
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    const chunk = decoder.decode(value);
+                    aiResponse += chunk;
+                    aiDiv.textContent = aiResponse;
+                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                }
+
+                statusDiv.textContent = '';
+            } catch (error) {
+                statusDiv.className = 'status';
+                statusDiv.style.background = '#f8d7da';
+                statusDiv.style.color = '#721c24';
+                statusDiv.textContent = '❌ Error: ' + error.message;
+                setTimeout(() => statusDiv.textContent = '', 3000);
+            } finally {
+                sendBtn.disabled = false;
+                input.focus();
+            }
+        }
+    </script>
+</body>
+</html>`;
+                return new Response(html, {
+                    headers: { 'Content-Type': 'text/html; charset=utf-8' },
                 });
             }
 
