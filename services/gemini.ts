@@ -11,7 +11,7 @@ export const geminiService: AIService = {
     }
 
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.0-flash-exp',
+      model: 'ggemini-3-flash-preview',
     });
 
     const chatHistory = messages.slice(0, -1).map(msg => ({
