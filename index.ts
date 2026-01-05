@@ -2,19 +2,41 @@ import { groqService } from './services/groq';
 import { cerebrasService } from './services/cerebras';
 import type { AIService, ChatMessage } from './types';
 import { geminiService } from './services/gemini';
+import { geminiTwoService } from './services/gemini_two';
+import { openrouterService } from './services/openrouter';
 
 const services: AIService[] = [
     groqService,
     cerebrasService,
     geminiService,
+    geminiTwoService,
+    openrouterService,
 ];
+
+// State Management
+interface ServiceState {
+    name: string;
+    cooldownUntil: number; // Timestamp when cooldown ends
+}
+
+const servicesState: Record<string, ServiceState> = {};
+// Initialize state
+services.forEach(s => {
+    servicesState[s.name] = { name: s.name, cooldownUntil: 0 };
+});
 
 let currentServiceIndex = 0;
 
-function getNextService() {
-    const service = services[currentServiceIndex];
-    currentServiceIndex = (currentServiceIndex + 1) % services.length;
-    return service;
+function getNextHealthyServiceIndex(startIndex: number): number {
+    const now = Date.now();
+    for (let i = 0; i < services.length; i++) {
+        const idx = (startIndex + i) % services.length;
+        const service = services[idx]!;
+        if (servicesState[service.name]!.cooldownUntil < now) {
+            return idx;
+        }
+    }
+    return -1; // All services busy/cooldown
 }
 
 function jsonResponse(data: any, status = 200) {
@@ -366,18 +388,25 @@ const server = Bun.serve({
                 return jsonResponse({
                     total: services.length,
                     current: services[currentServiceIndex]?.name,
-                    available: services.map((s, i) => ({
-                        name: s.name,
-                        index: i,
-                        active: i === currentServiceIndex,
-                    })),
+                    available: services.map((s, i) => {
+                        const state = servicesState[s.name]!;
+                        const now = Date.now();
+                        const isCooldown = state.cooldownUntil > now;
+                        return {
+                            name: s.name,
+                            index: i,
+                            active: i === currentServiceIndex,
+                            status: isCooldown ? 'COOLDOWN' : 'READY',
+                            cooldownRemaining: isCooldown ? Math.ceil((state.cooldownUntil - now) / 1000) + 's' : '0s'
+                        };
+                    }),
                 });
             }
 
             // Chat endpoint
             if (req.method === 'POST' && pathname === '/chat') {
                 const body = await req.json() as { messages: ChatMessage[] };
-                
+
                 // Validación
                 if (!body.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
                     return jsonResponse({
@@ -402,13 +431,11 @@ const server = Bun.serve({
                     }
                 }
 
-                const service = getNextService();
-                console.log(`[${new Date().toISOString()}] Using service: ${service?.name}`);
+                const serviceStartIndex = getNextHealthyServiceIndex(currentServiceIndex);
 
-                try {
-                    const stream = await service?.chat(body.messages);
-
-                    return new Response(stream, {
+                // If no services available at all initially
+                if (serviceStartIndex === -1) {
+                    return new Response(`data: Rate Limit : Todos los servicios están en cooldown (1h)\n\n`, {
                         headers: {
                             ...headers,
                             'Content-Type': 'text/event-stream',
@@ -416,14 +443,81 @@ const server = Bun.serve({
                             'Connection': 'keep-alive',
                         },
                     });
-                } catch (error) {
-                    console.error(`[${new Date().toISOString()}] Error with ${service?.name}:`, error);
-                    return jsonResponse({
-                        error: 'Service error',
-                        message: 'Error al procesar la solicitud con el servicio de IA',
-                        service: service?.name,
-                    }, 500);
                 }
+
+                // Update global index for next request to ensure rotation
+                currentServiceIndex = (serviceStartIndex + 1) % services.length;
+
+                let attemptIndex = serviceStartIndex;
+                let attempts = 0;
+                const maxAttempts = services.length;
+
+                while (attempts < maxAttempts) {
+                    const service = services[attemptIndex]!;
+
+                    // Double check if healthy (in case it failed in another request just now)
+                    if (servicesState[service.name]!.cooldownUntil > Date.now()) {
+                        attemptIndex = getNextHealthyServiceIndex(attemptIndex + 1);
+                        if (attemptIndex === -1) break; // No more healthy services
+                        continue;
+                    }
+
+                    console.log(`[${new Date().toISOString()}] Using service: ${service.name} (Attempt ${attempts + 1})`);
+
+                    try {
+                        const stream = await service.chat(body.messages);
+
+                        return new Response(stream, {
+                            headers: {
+                                ...headers,
+                                'Content-Type': 'text/event-stream',
+                                'Cache-Control': 'no-cache',
+                                'Connection': 'keep-alive',
+                            },
+                        });
+                    } catch (error: any) {
+                        console.error(`[${new Date().toISOString()}] Error with ${service.name}:`, error);
+
+                        // Check for Rate Limit (429)
+                        const isRateLimit = error?.status === 429 ||
+                            error?.message?.toLowerCase().includes('rate limit') ||
+                            error?.message?.toLowerCase().includes('too many requests') ||
+                            error?.message?.includes('429');
+
+                        if (isRateLimit) {
+                            console.warn(`⚠️ RATE LIMIT DETECTED for ${service.name}. Enabling 1h Cooldown.`);
+                            servicesState[service.name]!.cooldownUntil = Date.now() + (60 * 60 * 1000); // 1 hour
+
+                            // Try next service
+                            attemptIndex = getNextHealthyServiceIndex(attemptIndex + 1);
+                            if (attemptIndex === -1) break; // No more services
+                            attempts++;
+                        } else {
+                            // Non-rate-limit error: Fail request or try next?
+                            // Usually if it's a 500 from provider, we might want to try next too?
+                            // For now, let's treat generic errors as fatal for that request unless we want full robustness.
+                            // Let's stick to Rate Limit plan.
+                            return jsonResponse({
+                                error: 'Service error',
+                                message: error.message || 'Error executing AI service',
+                                service: service.name,
+                            }, 500);
+                        }
+                    }
+                }
+
+                // If we exit loop, all services failed or are busy
+                console.error(`[${new Date().toISOString()}] All services unavailable or rate limited.`);
+
+                // Fallback valid response for Agent
+                return new Response(`data: Rate Limit : Todos los servicios ocupados. Intente más tarde.\n\n`, {
+                    headers: {
+                        ...headers,
+                        'Content-Type': 'text/event-stream',
+                        'Cache-Control': 'no-cache',
+                        'Connection': 'keep-alive',
+                    },
+                });
             }
 
             // 404 para rutas no encontradas
